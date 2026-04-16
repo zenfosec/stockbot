@@ -5,11 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "stockbot"
 version = "0.1.0"
-description = "Simple CLI stock screener backed by yfinance."
+description = "Simple CLI stock screener backed by finviz and yfinance."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "yfinance>=0.2.40",
+    "finvizfinance>=0.14",
     "pandas>=2.0",
     "rich>=13.0",
     "click>=8.1",

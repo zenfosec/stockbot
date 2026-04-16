@@ -93,8 +93,11 @@ def _normalize(info: dict) -> dict:
     return out
 
 
-def _fetch_one(ticker: str) -> dict | None:
+def _fetch_one(ticker: str, throttle: float = 0) -> dict | None:
     """Fetch + normalize one ticker. Returns None on failure."""
+    if throttle > 0:
+        import time
+        time.sleep(throttle)
     try:
         info = yf.Ticker(ticker).info or {}
     except Exception:
@@ -112,6 +115,7 @@ def fetch(
     refresh: bool = False,
     cache_only: bool = False,
     show_progress: bool = True,
+    throttle: float = 0.3,
 ) -> pd.DataFrame:
     """Fetch normalized fundamentals for all tickers, using the cache.
 
@@ -158,7 +162,7 @@ def fetch(
                 total=len(missing),
             )
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {pool.submit(_fetch_one, t): t for t in missing}
+                futures = {pool.submit(_fetch_one, t, throttle): t for t in missing}
                 for fut in as_completed(futures):
                     t = futures[fut]
                     data = fut.result()

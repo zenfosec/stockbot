@@ -10,7 +10,7 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
-from . import __version__, cache as cache_mod, fetch as fetch_mod, screen, universe
+from . import __version__, cache as cache_mod, fetch as fetch_mod, finviz_source, screen, universe
 
 
 console = Console()
@@ -127,7 +127,13 @@ def cli() -> None:
     is_flag=True,
     help="Never hit the network. Screen only over tickers already in the cache.",
 )
-@click.option("--workers", type=int, default=20, help="Parallel fetch workers.")
+@click.option("--workers", type=int, default=20, help="Parallel fetch workers (yfinance only).")
+@click.option(
+    "--source",
+    type=click.Choice(["finviz", "yfinance"], case_sensitive=False),
+    default="finviz",
+    help="Data source. finviz is faster (bulk); yfinance is per-ticker but richer.",
+)
 def screen_cmd(
     tickers,
     limit,
@@ -153,47 +159,11 @@ def screen_cmd(
     refresh,
     cache_only,
     workers,
+    source,
 ):
     """Run a screen across the broader US market (or a given ticker list)."""
 
-    # 1. Pick universe.
-    if tickers:
-        symbols = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-        console.print(f"[dim]Screening {len(symbols)} user-supplied tickers.[/dim]")
-    else:
-        rows = universe.load()
-        symbols = [r["symbol"] for r in rows]
-        if limit:
-            import random
-            random.shuffle(symbols)
-            symbols = symbols[:limit]
-        console.print(f"[dim]Screening {len(symbols)} tickers from US universe.[/dim]")
-
-    # 2. Fetch fundamentals (cache-aware).
-    cache = cache_mod.Cache()
-    try:
-        df = fetch_mod.fetch(
-            symbols,
-            cache=cache,
-            workers=workers,
-            refresh=refresh,
-            cache_only=cache_only,
-        )
-    finally:
-        cache.close()
-
-    if df.empty:
-        msg = "No cached fundamentals found." if cache_only else "No fundamentals returned."
-        console.print(f"[yellow]{msg}[/yellow]")
-        sys.exit(1)
-
-    if cache_only:
-        console.print(
-            f"[dim]Cache-only: screening {len(df)} tickers with cached data "
-            f"(skipped {len(symbols) - len(df)} uncached).[/dim]"
-        )
-
-    # 3. Build filter list.
+    # 1. Build filter list (needed before fetch for finviz server-side filtering).
     filters: list[screen.Filter] = []
     def add(col, op, value):
         if value is not None:
@@ -216,7 +186,51 @@ def screen_cmd(
     if sector:
         filters.append(screen.Filter("sector", "eq", sector))
 
-    # 4. Apply filters, sort, top-N.
+    # 2. Fetch fundamentals.
+    cache = cache_mod.Cache()
+    try:
+        if cache_only:
+            # Cache-only: load from universe list + cache, skip network.
+            if tickers:
+                symbols = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+            else:
+                rows = universe.load()
+                symbols = [r["symbol"] for r in rows]
+            df = fetch_mod.fetch(symbols, cache=cache, cache_only=True)
+            if df.empty:
+                console.print("[yellow]No cached fundamentals found.[/yellow]")
+                sys.exit(1)
+            console.print(
+                f"[dim]Cache-only: screening {len(df)} cached tickers.[/dim]"
+            )
+        elif tickers:
+            # Explicit ticker list: always use yfinance (direct lookup).
+            symbols = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+            console.print(f"[dim]Fetching {len(symbols)} user-supplied tickers via yfinance.[/dim]")
+            df = fetch_mod.fetch(symbols, cache=cache, workers=workers, refresh=refresh)
+        elif source == "finviz":
+            # Finviz: bulk fetch with server-side filtering.
+            df = finviz_source.fetch(filters, cache=cache)
+        else:
+            # yfinance: per-ticker fetch with throttling.
+            rows = universe.load()
+            symbols = [r["symbol"] for r in rows]
+            if limit:
+                import random
+                random.shuffle(symbols)
+                symbols = symbols[:limit]
+            console.print(f"[dim]Fetching {len(symbols)} tickers via yfinance (throttled).[/dim]")
+            df = fetch_mod.fetch(
+                symbols, cache=cache, workers=workers, refresh=refresh, throttle=0.3,
+            )
+    finally:
+        cache.close()
+
+    if df.empty:
+        console.print("[yellow]No fundamentals returned.[/yellow]")
+        sys.exit(1)
+
+    # 3. Apply exact filters, sort, top-N.
     result = screen.apply_filters(df, filters)
     result = screen.sort_and_top(result, sort_by=sort_by, ascending=not desc, top=top)
 
