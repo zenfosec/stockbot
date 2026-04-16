@@ -164,6 +164,8 @@ def screen_cmd(
         rows = universe.load()
         symbols = [r["symbol"] for r in rows]
         if limit:
+            import random
+            random.shuffle(symbols)
             symbols = symbols[:limit]
         console.print(f"[dim]Screening {len(symbols)} tickers from US universe.[/dim]")
 

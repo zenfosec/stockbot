@@ -126,9 +126,25 @@ def fetch(
     cached: dict[str, dict] = {} if (refresh and not cache_only) else cache.get_many(tickers)
     missing = [] if cache_only else [t for t in tickers if t not in cached]
 
+    # Shuffle the fetch order so that if the upstream rate-limiter kicks in
+    # partway through, the cache ends up with a representative sample of the
+    # whole universe instead of just the alphabetically-early tickers.
+    import random
+    random.shuffle(missing)
+
     results: dict[str, dict] = dict(cached)
 
     if missing:
+        # Warm up yfinance's shared session / crumb before starting the
+        # thread pool.  Without this, multiple threads race to initialise the
+        # crumb simultaneously, it gets corrupted, and every subsequent call
+        # in the session returns "Invalid Crumb" 401s.
+        first = missing.pop(0)
+        data = _fetch_one(first)
+        if data is not None:
+            cache.put(first, data)
+            results[first] = data
+
         progress_cls = Progress if show_progress else _NoopProgress
         with progress_cls(
             TextColumn("[progress.description]{task.description}"),
